@@ -11,21 +11,19 @@ SEED = 61729198
 SAMPLE_TARGET = 2501
 
 # --- 2. Clean First, Sample Second Pipeline ---
-# Renamed function to instantly break Streamlit's stubborn cache
 @st.cache_data
-def load_dataset_v3():
+def load_dataset_v5():
     try:
         df = pd.read_csv("shopease_raw_orders.csv")
     except FileNotFoundError:
         st.error("Please place 'shopease_raw_orders.csv' in the folder.")
         st.stop()
 
-    # STEP 1: Remove duplicate Order IDs
     if "OrderID" in df.columns:
         df = df.drop_duplicates(subset="OrderID", keep="first")
 
-    # STEP 2: Standardize text and force bad text to NaN
-    for col in ["Gender", "City", "Category", "PaymentMethod", "OrderStatus"]:
+    # Added 'Product' to the string cleaning loop
+    for col in ["Gender", "City", "Category", "Product", "PaymentMethod", "OrderStatus"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip().str.title()
             df[col] = df[col].replace(["Nan", "None", "Null", "", "Na"], np.nan)
@@ -35,7 +33,6 @@ def load_dataset_v3():
     if "OrderStatus" in df.columns:
         df["OrderStatus"] = df["OrderStatus"].replace({"Canceled": "Cancelled"})
 
-    # STEP 3: Standardize numbers and force outliers to NaN
     def parse_discount(x):
         if pd.isna(x): return np.nan
         x = str(x).strip()
@@ -61,20 +58,15 @@ def load_dataset_v3():
         df["UnitPrice"] = pd.to_numeric(df["UnitPrice"], errors="coerce").astype(float)
         df["TotalAmount"] = pd.to_numeric(df["TotalAmount"], errors="coerce").astype(float)
         
-        # Check for mathematically impossible prices
         implied_total = df["Quantity"] * df["UnitPrice"] * (1 - df["Discount"])
         ratio = (implied_total / df["TotalAmount"].replace(0, np.nan)).abs()
         bad_price = (df["UnitPrice"] < 0) | (ratio > 3) | (ratio < 1/3)
         
-        # CRITICAL FIX: Use np.where to build a brand new array instead of .loc assignment
-        # This completely bypasses Pandas' strict integer/float assignment rules
         corrected_prices = (df["TotalAmount"] / (df["Quantity"] * (1 - df["Discount"]))).round(2)
         df["UnitPrice"] = np.where(bad_price, corrected_prices, df["UnitPrice"])
 
-    # STEP 4: Aggressively drop ANY row that still has a missing value
     df = df.dropna()
 
-    # STEP 5: Sample exactly 2,501 records from the purely clean dataset
     if len(df) < SAMPLE_TARGET:
         st.warning(f"Only {len(df)} fully clean rows remain in the raw file, which is less than {SAMPLE_TARGET}.")
         final_df = df.sample(frac=1, random_state=SEED).reset_index(drop=True)
@@ -83,17 +75,52 @@ def load_dataset_v3():
         
     return final_df
 
-df = load_dataset_v3()
+df = load_dataset_v5()
 
-# --- 3. Sidebar Filtering ---
+# --- 3. UPGRADED Sidebar Filtering ---
 with st.sidebar:
     st.title("⚙️ Dashboard Controls")
     st.caption(f"Target Sample: **{len(df)}** | Seed: **{SEED}**")
+    st.divider()
     
-    categories = st.multiselect("Filter by Category", sorted(df["Category"].unique()), default=sorted(df["Category"].unique()))
-    cities = st.multiselect("Filter by City", sorted(df["City"].unique()), default=sorted(df["City"].unique()))
+    st.subheader("Categorical Filters")
+    categories = st.multiselect("Category", sorted(df["Category"].unique()), default=sorted(df["Category"].unique()))
     
-    filtered_df = df[(df["Category"].isin(categories)) & (df["City"].isin(cities))]
+    # Filter available products based on the selected categories so the UI stays clean
+    available_products = df[df["Category"].isin(categories)]["Product"].unique() if categories else df["Product"].unique()
+    products = st.multiselect("Product", sorted(available_products), default=sorted(available_products))
+    
+    cities = st.multiselect("City", sorted(df["City"].unique()), default=sorted(df["City"].unique()))
+    genders = st.multiselect("Gender", sorted(df["Gender"].unique()), default=sorted(df["Gender"].unique()))
+    payments = st.multiselect("Payment Method", sorted(df["PaymentMethod"].unique()), default=sorted(df["PaymentMethod"].unique()))
+    statuses = st.multiselect("Order Status", sorted(df["OrderStatus"].unique()), default=sorted(df["OrderStatus"].unique()))
+    
+    st.divider()
+    st.subheader("Numeric Filters")
+    
+    # Age Range Slider
+    min_age_val = int(df["CustomerAge"].min())
+    max_age_val = int(df["CustomerAge"].max())
+    age_range = st.slider("Customer Age Range", min_value=min_age_val, max_value=max_age_val, value=(min_age_val, max_age_val), step=1)
+    
+    # Rating Slider
+    min_rating, max_rating = st.slider("Customer Rating", min_value=1.0, max_value=5.0, value=(1.0, 5.0), step=0.5)
+    
+    # Apply ALL filters dynamically
+    filtered_df = df[
+        (df["Category"].isin(categories)) & 
+        (df["Product"].isin(products)) &
+        (df["City"].isin(cities)) &
+        (df["Gender"].isin(genders)) &
+        (df["PaymentMethod"].isin(payments)) &
+        (df["OrderStatus"].isin(statuses)) &
+        (df["CustomerAge"] >= age_range[0]) & 
+        (df["CustomerAge"] <= age_range[1]) &
+        (df["Rating"] >= min_rating) & 
+        (df["Rating"] <= max_rating)
+    ]
+    
+    # Isolate delivered items for the revenue models to maintain mathematical accuracy
     delivered_df = filtered_df[filtered_df["OrderStatus"] == "Delivered"]
 
 # --- 4. Main Executive UI ---
@@ -110,7 +137,6 @@ st.divider()
 
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Interactive Analytics", "📋 Dataset Manager", "🔬 Statistical Insights", "📐 Econometric Models"])
 
-# --- TAB 1: INTERACTIVE PLOTLY CHARTS ---
 with tab1:
     col_chart1, col_chart2 = st.columns(2)
     
@@ -135,14 +161,13 @@ with tab1:
             y="TotalAmount", 
             color="Category", 
             size="Quantity",
-            hover_data=["City", "PaymentMethod"], 
+            hover_data=["City", "PaymentMethod", "Gender", "Rating", "Product"], 
             title="Transaction Analysis: Age vs Value", 
             template="plotly_white", 
             opacity=0.7
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
 
-# --- TAB 2: DATASET MANAGER ---
 with tab2:
     st.subheader("Cleaned Operational Data (Target: 2501)")
     st.dataframe(filtered_df, use_container_width=True, height=400)
@@ -150,7 +175,6 @@ with tab2:
     st.subheader("Numeric Summary")
     st.dataframe(filtered_df[["CustomerAge", "Quantity", "UnitPrice", "Discount", "TotalAmount", "Rating"]].describe().T, use_container_width=True)
 
-# --- TAB 3: STATISTICAL INSIGHTS ---
 with tab3:
     st.subheader("Behavioral & Statistical Testing")
     c1, c2 = st.columns(2)
@@ -176,7 +200,6 @@ with tab3:
                 st.metric("F-Statistic", f"{f_stat:.4f}")
                 st.metric("P-Value", f"{p_anova:.4g}")
 
-# --- TAB 4: ECONOMETRIC MODELS ---
 with tab4:
     st.subheader("Causal Regressions")
     
