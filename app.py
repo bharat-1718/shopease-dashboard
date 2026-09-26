@@ -12,7 +12,7 @@ SAMPLE_TARGET = 2501
 
 # --- 2. Clean First, Sample Second Pipeline ---
 @st.cache_data
-def load_dataset_v10():
+def load_dataset_v11():
     try:
         df = pd.read_csv("shopease_raw_orders.csv")
     except FileNotFoundError:
@@ -63,6 +63,8 @@ def load_dataset_v10():
     if "Rating" in df.columns:
         df["Rating"] = pd.to_numeric(df["Rating"], errors="coerce").astype(float)
         df.loc[(df["Rating"] < 1) | (df["Rating"] > 5), "Rating"] = np.nan
+        # CRITICAL FIX: Give Cancelled/Pending orders a 0.0 rating so they aren't deleted
+        df["Rating"] = df["Rating"].fillna(0.0)
 
     if "UnitPrice" in df.columns and "TotalAmount" in df.columns:
         df["UnitPrice"] = pd.to_numeric(df["UnitPrice"], errors="coerce").astype(float)
@@ -78,6 +80,7 @@ def load_dataset_v10():
     if "DeliveryDate" in df.columns:
         df["DeliveryDate"] = df["DeliveryDate"].fillna("N/A")
 
+    # Now when we dropna, the Cancelled orders will survive because their blank ratings are now 0.0
     df = df.dropna()
 
     if len(df) < SAMPLE_TARGET:
@@ -88,7 +91,7 @@ def load_dataset_v10():
         
     return final_df
 
-df = load_dataset_v10()
+df = load_dataset_v11()
 
 # --- 3. Sidebar Filtering ---
 with st.sidebar:
@@ -114,7 +117,8 @@ with st.sidebar:
     max_age_val = int(df["CustomerAge"].max())
     age_range = st.slider("Customer Age Range", min_value=min_age_val, max_value=max_age_val, value=(min_age_val, max_age_val), step=1)
     
-    min_rating, max_rating = st.slider("Customer Rating", min_value=1.0, max_value=5.0, value=(1.0, 5.0), step=0.5)
+    # Updated slider to include 0.0 so Cancelled/Pending orders show up
+    min_rating, max_rating = st.slider("Customer Rating (0 = Unrated)", min_value=0.0, max_value=5.0, value=(0.0, 5.0), step=0.5)
     
     filtered_df = df[
         (df["Category"].isin(categories)) & 
@@ -139,7 +143,8 @@ m1, m2, m3, m4 = st.columns(4)
 m1.metric("Active Records", f"{len(filtered_df):,}", "Exactly 2,501 loaded")
 m2.metric("Total Generated Revenue", f"${filtered_df['TotalAmount'].sum():,.0f}")
 m3.metric("Average Transaction Value", f"${filtered_df['TotalAmount'].mean():,.2f}")
-m4.metric("Mean Customer Rating", f"{filtered_df['Rating'].mean():.2f} / 5.0")
+# Ensure 0.0 ratings don't drag down the real average
+m4.metric("Mean Customer Rating", f"{filtered_df[filtered_df['Rating'] > 0]['Rating'].mean():.2f} / 5.0")
 
 st.divider()
 
@@ -186,24 +191,23 @@ with tab1:
     # ROW 3: Box Plot & Scatter Plot
     r3c1, r3c2 = st.columns(2)
     with r3c1:
-        # 5. BOX PLOT
-        if not delivered_df.empty:
-            fig_box = px.box(delivered_df, x="PaymentMethod", y="TotalAmount", color="PaymentMethod",
-                             title="5. Box Plot: Spend Variation by Payment", template="plotly_white")
+        # 5. BOX PLOT (Simplified: Age vs Category)
+        if not filtered_df.empty:
+            fig_box = px.box(filtered_df, x="Category", y="CustomerAge", color="Category",
+                             title="5. Box Plot: Customer Age Spread by Category", template="plotly_white")
             fig_box.update_layout(showlegend=False)
             st.plotly_chart(fig_box, use_container_width=True)
 
     with r3c2:
-        # 6. SCATTER PLOT (Bubble Plot)
-        if not delivered_df.empty:
+        # 6. SCATTER PLOT (Simplified: Clean dots, no overlapping bubbles)
+        if not filtered_df.empty:
             fig_scatter = px.scatter(
-                delivered_df, 
-                x="CustomerAge", 
+                filtered_df, 
+                x="Quantity", 
                 y="TotalAmount", 
                 color="Category", 
-                size="Quantity",
                 hover_data=["City", "PaymentMethod", "Gender", "Product"], 
-                title="6. Scatter Plot: Age vs. Transaction Value", 
+                title="6. Scatter Plot: Quantity vs. Total Revenue", 
                 template="plotly_white", 
                 opacity=0.7
             )
