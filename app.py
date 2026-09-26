@@ -12,7 +12,7 @@ SAMPLE_TARGET = 2501
 
 # --- 2. Clean First, Sample Second Pipeline ---
 @st.cache_data
-def load_dataset_v5():
+def load_dataset_v10():
     try:
         df = pd.read_csv("shopease_raw_orders.csv")
     except FileNotFoundError:
@@ -22,7 +22,6 @@ def load_dataset_v5():
     if "OrderID" in df.columns:
         df = df.drop_duplicates(subset="OrderID", keep="first")
 
-    # Added 'Product' to the string cleaning loop
     for col in ["Gender", "City", "Category", "Product", "PaymentMethod", "OrderStatus"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip().str.title()
@@ -30,8 +29,19 @@ def load_dataset_v5():
 
     if "Gender" in df.columns:
         df["Gender"] = df["Gender"].map({"F": "Female", "M": "Male", "Female": "Female", "Male": "Male"})
+    
     if "OrderStatus" in df.columns:
-        df["OrderStatus"] = df["OrderStatus"].replace({"Canceled": "Cancelled"})
+        df["OrderStatus"] = df["OrderStatus"].replace({
+            "Canceled": "Cancelled", 
+            "Cancel": "Cancelled",
+            "Cencelled": "Cancelled"
+        })
+
+    if "OrderDate" in df.columns:
+        df["OrderDate"] = pd.to_datetime(df["OrderDate"], errors="coerce")
+        fallback_date = df["OrderDate"].mode()[0] if not df["OrderDate"].mode().empty else pd.Timestamp('2023-01-01')
+        df["OrderDate"] = df["OrderDate"].fillna(fallback_date)
+        df["Month"] = df["OrderDate"].dt.strftime('%Y-%m')
 
     def parse_discount(x):
         if pd.isna(x): return np.nan
@@ -65,19 +75,22 @@ def load_dataset_v5():
         corrected_prices = (df["TotalAmount"] / (df["Quantity"] * (1 - df["Discount"]))).round(2)
         df["UnitPrice"] = np.where(bad_price, corrected_prices, df["UnitPrice"])
 
+    if "DeliveryDate" in df.columns:
+        df["DeliveryDate"] = df["DeliveryDate"].fillna("N/A")
+
     df = df.dropna()
 
     if len(df) < SAMPLE_TARGET:
-        st.warning(f"Only {len(df)} fully clean rows remain in the raw file, which is less than {SAMPLE_TARGET}.")
+        st.warning(f"Only {len(df)} clean rows remain, which is less than {SAMPLE_TARGET}.")
         final_df = df.sample(frac=1, random_state=SEED).reset_index(drop=True)
     else:
         final_df = df.sample(n=SAMPLE_TARGET, random_state=SEED).reset_index(drop=True)
         
     return final_df
 
-df = load_dataset_v5()
+df = load_dataset_v10()
 
-# --- 3. UPGRADED Sidebar Filtering ---
+# --- 3. Sidebar Filtering ---
 with st.sidebar:
     st.title("⚙️ Dashboard Controls")
     st.caption(f"Target Sample: **{len(df)}** | Seed: **{SEED}**")
@@ -86,7 +99,6 @@ with st.sidebar:
     st.subheader("Categorical Filters")
     categories = st.multiselect("Category", sorted(df["Category"].unique()), default=sorted(df["Category"].unique()))
     
-    # Filter available products based on the selected categories so the UI stays clean
     available_products = df[df["Category"].isin(categories)]["Product"].unique() if categories else df["Product"].unique()
     products = st.multiselect("Product", sorted(available_products), default=sorted(available_products))
     
@@ -98,15 +110,12 @@ with st.sidebar:
     st.divider()
     st.subheader("Numeric Filters")
     
-    # Age Range Slider
     min_age_val = int(df["CustomerAge"].min())
     max_age_val = int(df["CustomerAge"].max())
     age_range = st.slider("Customer Age Range", min_value=min_age_val, max_value=max_age_val, value=(min_age_val, max_age_val), step=1)
     
-    # Rating Slider
     min_rating, max_rating = st.slider("Customer Rating", min_value=1.0, max_value=5.0, value=(1.0, 5.0), step=0.5)
     
-    # Apply ALL filters dynamically
     filtered_df = df[
         (df["Category"].isin(categories)) & 
         (df["Product"].isin(products)) &
@@ -120,12 +129,11 @@ with st.sidebar:
         (df["Rating"] <= max_rating)
     ]
     
-    # Isolate delivered items for the revenue models to maintain mathematical accuracy
     delivered_df = filtered_df[filtered_df["OrderStatus"] == "Delivered"]
 
 # --- 4. Main Executive UI ---
 st.title("📈 Executive Commercial Operations")
-st.markdown("Strictly cleaned and randomly sampled dataset featuring dynamic visualization and econometric causality.")
+st.markdown("Strictly cleaned dataset featuring interactive visualizations aligned with core charting theory.")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Active Records", f"{len(filtered_df):,}", "Exactly 2,501 loaded")
@@ -137,60 +145,90 @@ st.divider()
 
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Interactive Analytics", "📋 Dataset Manager", "🔬 Statistical Insights", "📐 Econometric Models"])
 
+# --- TAB 1: THE 6 COURSE-ALIGNED CHARTS ---
 with tab1:
-    col_chart1, col_chart2 = st.columns(2)
-    
-    with col_chart1:
+    # ROW 1: Bar Plot & Pie Plot
+    r1c1, r1c2 = st.columns(2)
+    with r1c1:
+        # 1. BAR PLOT
         category_rev = delivered_df.groupby("Category")["TotalAmount"].sum().reset_index()
         fig_bar = px.bar(category_rev, x="Category", y="TotalAmount", text_auto='.2s', 
-                         title="Total Revenue by Category (Delivered)", color="Category", template="plotly_white")
+                         title="1. Bar Plot: Revenue by Category", color="Category", template="plotly_white")
         fig_bar.update_traces(textfont_size=12, textangle=0, textposition="outside")
         st.plotly_chart(fig_bar, use_container_width=True)
 
-    with col_chart2:
+    with r1c2:
+        # 2. PIE PLOT (Donut style)
         status_counts = filtered_df["OrderStatus"].value_counts().reset_index()
-        fig_donut = px.pie(status_counts, values="count", names="OrderStatus", hole=0.4, 
-                           title="Order Fulfillment Status", template="plotly_white")
-        fig_donut.update_traces(textposition='inside', textinfo='percent+label')
-        st.plotly_chart(fig_donut, use_container_width=True)
+        fig_pie = px.pie(status_counts, values="count", names="OrderStatus", hole=0.4, 
+                           title="2. Pie Plot: Order Status Distribution", template="plotly_white", color="OrderStatus")
+        fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-    if not delivered_df.empty:
-        fig_scatter = px.scatter(
-            delivered_df, 
-            x="CustomerAge", 
-            y="TotalAmount", 
-            color="Category", 
-            size="Quantity",
-            hover_data=["City", "PaymentMethod", "Gender", "Rating", "Product"], 
-            title="Transaction Analysis: Age vs Value", 
-            template="plotly_white", 
-            opacity=0.7
-        )
-        st.plotly_chart(fig_scatter, use_container_width=True)
+    # ROW 2: Line Plot & Histogram
+    r2c1, r2c2 = st.columns(2)
+    with r2c1:
+        # 3. LINE PLOT
+        if "Month" in delivered_df.columns and not delivered_df.empty:
+            trend_df = delivered_df.groupby("Month")["TotalAmount"].sum().reset_index().sort_values("Month")
+            fig_line = px.line(trend_df, x="Month", y="TotalAmount", markers=True,
+                               title="3. Line Plot: Monthly Revenue Trend", template="plotly_white")
+            st.plotly_chart(fig_line, use_container_width=True)
 
+    with r2c2:
+        # 4. HISTOGRAM PLOT
+        fig_hist = px.histogram(filtered_df, x="CustomerAge", nbins=15, 
+                                title="4. Histogram: Customer Age Distribution", 
+                                template="plotly_white", color_discrete_sequence=["#1f77b4"])
+        fig_hist.update_layout(bargap=0.1)
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+    # ROW 3: Box Plot & Scatter Plot
+    r3c1, r3c2 = st.columns(2)
+    with r3c1:
+        # 5. BOX PLOT
+        if not delivered_df.empty:
+            fig_box = px.box(delivered_df, x="PaymentMethod", y="TotalAmount", color="PaymentMethod",
+                             title="5. Box Plot: Spend Variation by Payment", template="plotly_white")
+            fig_box.update_layout(showlegend=False)
+            st.plotly_chart(fig_box, use_container_width=True)
+
+    with r3c2:
+        # 6. SCATTER PLOT (Bubble Plot)
+        if not delivered_df.empty:
+            fig_scatter = px.scatter(
+                delivered_df, 
+                x="CustomerAge", 
+                y="TotalAmount", 
+                color="Category", 
+                size="Quantity",
+                hover_data=["City", "PaymentMethod", "Gender", "Product"], 
+                title="6. Scatter Plot: Age vs. Transaction Value", 
+                template="plotly_white", 
+                opacity=0.7
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+# --- TAB 2, 3, 4: RETAINED ANALYSIS ---
 with tab2:
     st.subheader("Cleaned Operational Data (Target: 2501)")
     st.dataframe(filtered_df, use_container_width=True, height=400)
-    
     st.subheader("Numeric Summary")
     st.dataframe(filtered_df[["CustomerAge", "Quantity", "UnitPrice", "Discount", "TotalAmount", "Rating"]].describe().T, use_container_width=True)
 
 with tab3:
     st.subheader("Behavioral & Statistical Testing")
     c1, c2 = st.columns(2)
-    
     with c1:
         with st.expander("Gender Revenue Variance (Welch's T-Test)", expanded=True):
             m_rev = delivered_df.loc[delivered_df["Gender"] == "Male", "TotalAmount"]
             f_rev = delivered_df.loc[delivered_df["Gender"] == "Female", "TotalAmount"]
-            
             if not m_rev.empty and not f_rev.empty:
                 t_stat, p_val = stats.ttest_ind(m_rev, f_rev, equal_var=False)
                 st.metric("T-Statistic", f"{t_stat:.4f}")
                 st.metric("P-Value", f"{p_val:.4g}")
             else:
-                st.info("Insufficient data for gender testing.")
-
+                st.info("Insufficient data.")
     with c2:
         with st.expander("Category Revenue Variance (ANOVA)", expanded=True):
             groups = [delivered_df.loc[delivered_df["Category"] == c, "TotalAmount"] for c in delivered_df["Category"].unique()]
@@ -202,9 +240,7 @@ with tab3:
 
 with tab4:
     st.subheader("Causal Regressions")
-    
     model_choice = st.selectbox("Select Model Architecture", ["OLS: Revenue Drivers", "Logistic: Delivery Probability"])
-    
     if model_choice == "OLS: Revenue Drivers":
         if not delivered_df.empty:
             try:
@@ -212,11 +248,9 @@ with tab4:
                 st.code(m.summary().as_text(), language="text")
             except Exception as e:
                 st.error(f"Model error: {e}")
-            
     elif model_choice == "Logistic: Delivery Probability":
         log_data = filtered_df.copy()
         log_data["Success"] = (log_data["OrderStatus"] == "Delivered").astype(int)
-        
         if not log_data.empty:
             try:
                 m_log = smf.logit("Success ~ CustomerAge + Discount", data=log_data).fit(disp=False)
